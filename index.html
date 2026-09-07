@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Filtro Dragón 🐲</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: radial-gradient(circle at 50% 30%, #1a2e1a, #050805);
+    color: #d8ffd8;
+    font-family: system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 16px;
+  }
+  h1 { font-size: 1.6rem; margin: 8px 0; text-shadow: 0 0 12px #3f0; }
+  #stage {
+    position: relative;
+    width: 100%;
+    max-width: 800px;
+    aspect-ratio: 4 / 3;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 0 40px rgba(80,255,80,0.25);
+    background: #000;
+  }
+  video, canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+  video { visibility: hidden; }   /* solo se usa como fuente; se ve el canvas */
+  #overlay { z-index: 2; }
+  #ui {
+    display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+    margin-top: 14px;
+  }
+  button {
+    background: #2f7d32; color: #fff; border: none;
+    padding: 12px 20px; border-radius: 10px; font-size: 1rem;
+    cursor: pointer; box-shadow: 0 0 14px rgba(80,255,80,0.4);
+    transition: transform .1s;
+  }
+  button:hover { transform: scale(1.05); }
+  button:disabled { opacity: .5; cursor: default; transform: none; }
+  #status { margin-top: 10px; font-size: .9rem; opacity: .85; min-height: 1.2em; text-align: center; }
+  label { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; }
+</style>
+</head>
+<body>
+  <h1>🐲 Filtro Dragón</h1>
+
+  <div id="stage">
+    <video id="video" playsinline></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <div id="ui">
+    <button id="startBtn">▶ Activar cámara</button>
+    <button id="shotBtn" disabled>📸 Foto</button>
+    <label><input type="checkbox" id="fireChk"> 🔥 Escupir fuego (abre la boca)</label>
+  </div>
+  <div id="status">Pulsa "Activar cámara" y permite el acceso cuando el navegador lo pida.</div>
+
+  <!-- MediaPipe FaceMesh (detección de rostro con 468 puntos) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+  <script>
+  const video   = document.getElementById('video');
+  const canvas  = document.getElementById('overlay');
+  const ctx     = canvas.getContext('2d');
+  const statusEl= document.getElementById('status');
+  const startBtn= document.getElementById('startBtn');
+  const shotBtn = document.getElementById('shotBtn');
+  const fireChk = document.getElementById('fireChk');
+
+  let W = 800, H = 600;
+  let lastLandmarks = null;
+
+  // ---------- utilidades ----------
+  function setStatus(t){ statusEl.textContent = t; }
+  function lerp(a,b,t){ return a + (b-a)*t; }
+  function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+
+  // ---------- FaceMesh ----------
+  const faceMesh = new FaceMesh({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+  });
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  faceMesh.onResults(onResults);
+
+  function onResults(results){
+    // ajustar tamaño del canvas al del vídeo
+    if (results.image && (canvas.width !== results.image.width)) {
+      canvas.width  = results.image.width;
+      canvas.height = results.image.height;
+    }
+    W = canvas.width; H = canvas.height;
+
+    ctx.save();
+    // espejo (vista selfie)
+    ctx.translate(W, 0);
+    ctx.scale(-1, 1);
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(results.image, 0, 0, W, H);
+
+    if (results.multiFaceLandmarks && results.multiFaceLandmarks.length){
+      lastLandmarks = results.multiFaceLandmarks[0];
+      drawDragon(lastLandmarks);
+      setStatus('¡Cara detectada! Mueve la cabeza 🐲');
+    } else {
+      setStatus('Buscando tu cara... acércate y mira a la cámara.');
+    }
+    ctx.restore();
+  }
+
+  // ---------- dibujo del dragón ----------
+  function drawDragon(lm){
+    const P = i => ({ x: lm[i].x * W, y: lm[i].y * H });
+
+    const Lcheek = P(234), Rcheek = P(454);
+    const top    = P(10),  chin   = P(152);
+    const noseTip= P(1),   noseBridge = P(6), noseBottom = P(2);
+
+    const faceW = dist(Lcheek, Rcheek);
+
+    // vector "arriba" de la cabeza (para girar cuernos con la inclinación)
+    let ux = top.x - chin.x, uy = top.y - chin.y;
+    const ulen = Math.hypot(ux, uy) || 1; ux/=ulen; uy/=ulen;
+    // vector "lateral"
+    let rx = Rcheek.x - Lcheek.x, ry = Rcheek.y - Lcheek.y;
+    const rlen = Math.hypot(rx, ry) || 1; rx/=rlen; ry/=rlen;
+
+    // ===== HOCICO / MORRO verde con escamas =====
+    ctx.save();
+    const snoutGrad = ctx.createRadialGradient(noseTip.x, noseTip.y, faceW*0.05, noseTip.x, noseTip.y, faceW*0.45);
+    snoutGrad.addColorStop(0, '#7bd44a');
+    snoutGrad.addColorStop(0.6, '#3f9d2c');
+    snoutGrad.addColorStop(1, '#1f5e17');
+    ctx.fillStyle = snoutGrad;
+    ctx.strokeStyle = '#123c0d';
+    ctx.lineWidth = faceW*0.02;
+    ctx.beginPath();
+    ctx.ellipse(noseTip.x, noseTip.y + faceW*0.02, faceW*0.30, faceW*0.24, Math.atan2(uy,ux)+Math.PI/2, 0, Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+
+    // escamas del morro
+    ctx.fillStyle = 'rgba(20,70,15,0.35)';
+    for (let i=-1;i<=1;i++){
+      for (let j=-1;j<=1;j++){
+        const sx = noseTip.x + rx*faceW*0.11*i + (-uy)*0; // pequeño patrón
+        const sy = noseTip.y + faceW*0.09*j;
+        ctx.beginPath();
+        ctx.arc(sx, sy - faceW*0.05, faceW*0.035, Math.PI, 2*Math.PI);
+        ctx.fill();
+      }
+    }
+    // fosas nasales
+    ctx.fillStyle = '#0a2606';
+    const nlx = noseTip.x - rx*faceW*0.09, nly = noseTip.y - uy*faceW*0.02;
+    const nrx = noseTip.x + rx*faceW*0.09, nry = noseTip.y - uy*faceW*0.02;
+    ctx.beginPath(); ctx.ellipse(nlx, nly, faceW*0.03, faceW*0.05, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(nrx, nry, faceW*0.03, faceW*0.05, 0, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // ===== OJOS de reptil brillantes =====
+    const eyeL = { x:(P(33).x+P(133).x)/2, y:(P(159).y+P(145).y)/2 };
+    const eyeR = { x:(P(362).x+P(263).x)/2, y:(P(386).y+P(374).y)/2 };
+    const eyeRad = faceW*0.10;
+    for (const e of [eyeL, eyeR]){
+      const g = ctx.createRadialGradient(e.x, e.y, eyeRad*0.1, e.x, e.y, eyeRad);
+      g.addColorStop(0, '#fff6c0');
+      g.addColorStop(0.4, '#ffcc33');
+      g.addColorStop(1, '#e06a00');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(e.x, e.y, eyeRad, 0, Math.PI*2); ctx.fill();
+      // pupila vertical (rasgada)
+      ctx.fillStyle = '#0a0a0a';
+      ctx.beginPath(); ctx.ellipse(e.x, e.y, eyeRad*0.22, eyeRad*0.85, 0, 0, Math.PI*2); ctx.fill();
+      // brillo
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.beginPath(); ctx.arc(e.x - eyeRad*0.3, e.y - eyeRad*0.35, eyeRad*0.12, 0, Math.PI*2); ctx.fill();
+    }
+
+    // ===== CEJA / CRESTA con pinchos sobre los ojos =====
+    ctx.fillStyle = '#255e17';
+    ctx.strokeStyle = '#0f3a09';
+    ctx.lineWidth = faceW*0.01;
+    const browPts = [70, 63, 105, 66, 107, 336, 296, 334, 293, 300];
+    ctx.beginPath();
+    browPts.forEach((idx,k)=>{
+      const p = P(idx);
+      const px = p.x, py = p.y - faceW*0.05;
+      if (k===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+      // pincho
+      ctx.lineTo(px, py - faceW*0.10);
+      ctx.lineTo(px + rx*faceW*0.04, py);
+    });
+    ctx.closePath();
+    ctx.fill();
+
+    // ===== CUERNOS grandes y curvos =====
+    const hornBaseL = P(103), hornBaseR = P(332);
+    drawHorn(hornBaseL, ux, uy, -rx, -ry, faceW);
+    drawHorn(hornBaseR, ux, uy,  rx,  ry, faceW);
+
+    // ===== FUEGO opcional al abrir la boca =====
+    const mouthOpen = dist(P(13), P(14)) / faceW; // labio superior vs inferior
+    if (fireChk.checked && mouthOpen > 0.06){
+      drawFire(P(14), ux, uy, faceW, mouthOpen);
+    }
+  }
+
+  function drawHorn(base, ux, uy, sideX, sideY, faceW){
+    const len = faceW*0.95;
+    // punto medio y punta (curvados hacia arriba y afuera)
+    const midX = base.x + ux*len*0.5 + sideX*len*0.28;
+    const midY = base.y + uy*len*0.5 + sideY*len*0.28;
+    const tipX = base.x + ux*len*0.9 + sideX*len*0.65;
+    const tipY = base.y + uy*len*0.9 + sideY*len*0.65;
+    const wBase = faceW*0.16;
+
+    const g = ctx.createLinearGradient(base.x, base.y, tipX, tipY);
+    g.addColorStop(0, '#d9c9a3');
+    g.addColorStop(0.5, '#a1804f');
+    g.addColorStop(1, '#5e4526');
+    ctx.fillStyle = g;
+    ctx.strokeStyle = '#3a2a14';
+    ctx.lineWidth = faceW*0.012;
+
+    // lado perpendicular para dar grosor a la base
+    const px = -uy, py = ux;
+    ctx.beginPath();
+    ctx.moveTo(base.x + px*wBase*0.5, base.y + py*wBase*0.5);
+    ctx.quadraticCurveTo(midX + px*wBase*0.25, midY + py*wBase*0.25, tipX, tipY);
+    ctx.quadraticCurveTo(midX - px*wBase*0.25, midY - py*wBase*0.25, base.x - px*wBase*0.5, base.y - py*wBase*0.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // anillos del cuerno
+    ctx.strokeStyle = 'rgba(60,42,20,0.6)';
+    ctx.lineWidth = faceW*0.02;
+    for (let t=0.25; t<0.85; t+=0.2){
+      const cx = lerp(base.x, tipX, t), cy = lerp(base.y, tipY, t);
+      const w = wBase*(1-t)*0.5;
+      ctx.beginPath();
+      ctx.moveTo(cx + px*w, cy + py*w);
+      ctx.lineTo(cx - px*w, cy - py*w);
+      ctx.stroke();
+    }
+  }
+
+  function drawFire(mouth, ux, uy, faceW, amount){
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const len = faceW*(1.2 + amount*3);
+    for (let i=0;i<40;i++){
+      const spread = (Math.random()-0.5)*faceW*0.5;
+      const px = -uy, py = ux;
+      const t = Math.random();
+      const x = mouth.x - ux*len*t + px*spread*t;
+      const y = mouth.y - uy*len*t + py*spread*t;
+      const r = faceW*0.12*(1-t) + faceW*0.02;
+      const g = ctx.createRadialGradient(x,y,0,x,y,r);
+      g.addColorStop(0, 'rgba(255,255,180,0.9)');
+      g.addColorStop(0.4, 'rgba(255,140,0,0.7)');
+      g.addColorStop(1, 'rgba(255,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---------- arranque de la cámara ----------
+  let camera = null;
+  startBtn.addEventListener('click', async () => {
+    startBtn.disabled = true;
+    setStatus('Pidiendo permiso de cámara...');
+    try {
+      camera = new Camera(video, {
+        onFrame: async () => { await faceMesh.send({ image: video }); },
+        width: 800, height: 600
+      });
+      await camera.start();
+      shotBtn.disabled = false;
+      setStatus('Cámara activa. Cargando el modelo de detección (unos segundos la 1ª vez)...');
+    } catch (err) {
+      setStatus('No se pudo abrir la cámara: ' + err.message);
+      startBtn.disabled = false;
+    }
+  });
+
+  // ---------- hacer foto ----------
+  shotBtn.addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.download = 'dragon-selfie.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  });
+  </script>
+</body>
+</html>

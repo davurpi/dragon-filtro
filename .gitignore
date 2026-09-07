@@ -1,0 +1,4 @@
+# No publicar el certificado local (solo servía para el HTTPS de tu PC)
+key.pem
+cert.pem
+node_modules/
